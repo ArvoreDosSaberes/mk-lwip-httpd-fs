@@ -17,7 +17,8 @@ setlocal enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_ROOT=%SCRIPT_DIR%.."
-set "SUBPROJ_DIR=%PROJECT_ROOT%\MakeFSdataProjPlusExample"
+REM SUBPROJ_DIR deve apontar para a raiz "makefs" (já é PROJECT_ROOT)
+set "SUBPROJ_DIR=%PROJECT_ROOT%"
 
 set "PYTHON="
 

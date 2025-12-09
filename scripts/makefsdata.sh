@@ -17,7 +17,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SUBPROJ_DIR="${PROJECT_ROOT}/MakeFSdataProjPlusExample"
+# SUBPROJ_DIR deve apontar para a raiz "makefs" (já calculada em PROJECT_ROOT)
+SUBPROJ_DIR="${PROJECT_ROOT}"
 
 PYTHON=""
 
