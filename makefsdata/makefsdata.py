@@ -47,7 +47,8 @@ CONTENT_TYPE_MAP = {
     "ico": "image/x-icon",
     "class": "application/octet-stream",
     "cls": "application/octet-stream",
-    "js": "application/x-javascript",
+    "js": "application/javascript",
+    "map": "application/json",
     "css": "text/css",
     "swf": "application/x-shockwave-flash",
     "xml": "text/xml",
@@ -477,7 +478,21 @@ def process_file(
     data_file.write("};\n\n")
 
     # Struct fsdata_file correspondente
-    struct_file.write(f"const struct fsdata_file file_{varname}[] = {{ {{\n")
+    #
+    # Observação importante:
+    # - Quando o alvo é um arquivo .c (fsdata.c tradicional), usamos
+    #   'const struct fsdata_file' com ligação externa, como no original.
+    # - Quando o alvo é um arquivo .h incluído por outro módulo que também
+    #   linka contra o fsdata.c padrão da lwIP, precisamos evitar múltiplas
+    #   definições de símbolos (file_*). Para isso, declaramos as structs
+    #   como 'static const', garantindo ligação interna.
+
+    storage = "const"
+    target_is_header = str(cfg.target_filename).lower().endswith(".h")
+    if target_is_header:
+        storage = "static const"
+
+    struct_file.write(f"{storage} struct fsdata_file file_{varname}[] = {{ {{\n")
     struct_file.write(f"file_{last_var_name},\n")
     struct_file.write(f"data_{varname},\n")
     struct_file.write(f"data_{varname} + {prefix_len},\n")
@@ -545,11 +560,25 @@ def generate_fs(cfg: MakeFsConfig, exclude_exts: List[str]) -> None:
         num_files = 0
         used_names: List[str] = []
 
+        # Estatísticas para sugerir ajustes em lwipopts.h
+        max_file_size = 0
+        max_file_name = ""
+        total_bytes = 0
+
         for qualified, full in iter_files(cfg.target_dir, cfg.process_subdirs, exclude_exts):
             if _stop_requested:
                 break
             sys.stdout.write(f"processando {qualified}...\n")
             sys.stdout.flush()
+            try:
+                file_size = full.stat().st_size
+            except OSError:
+                file_size = 0
+
+            total_bytes += file_size
+            if file_size > max_file_size:
+                max_file_size = file_size
+                max_file_name = qualified
             last_var, inc = process_file(
                 data_file=data_file,
                 struct_file=struct_file,
@@ -587,6 +616,24 @@ def generate_fs(cfg: MakeFsConfig, exclude_exts: List[str]) -> None:
             f"(Deflated total byte reduction: {overall_data_bytes} bytes -> "
             f"{deflated_bytes_reduced} bytes ({ratio:.02f}%)\n"
         )
+
+    # Sugestão heurística para ajustes em lwipopts.h com base no maior arquivo
+    if num_files > 0 and max_file_size > 0:
+        sys.stdout.write("\nResumo para ajuste em lwipopts.h (valores sugeridos, revisar manualmente):\n")
+        sys.stdout.write(f"  Maior arquivo HTTP : {max_file_name} ({max_file_size} bytes)\n")
+        sys.stdout.write(f"  Total de dados HTTP: {total_bytes} bytes\n")
+
+        # Heurística simples: janela e buffer de envio pelo menos 2x o maior arquivo,
+        # mas não menor que 16 kB para evitar fragmentação excessiva.
+        min_buf = 16 * 1024
+        recommended_buf = max(2 * max_file_size, min_buf)
+
+        sys.stdout.write("\n  Sugestão mínima (ajustar em Sources/lwipopts.h):\n")
+        sys.stdout.write(f"    #define TCP_SND_BUF  {recommended_buf}\n")
+        sys.stdout.write(f"    #define TCP_WND      {recommended_buf}\n")
+        sys.stdout.write("\n  Observação:\n")
+        sys.stdout.write("    - Esses valores são heurísticos e devem considerar a RAM disponível,\n")
+        sys.stdout.write("      quantidade de conexões simultâneas e demais requisitos do projeto.\n")
 
 
 def main(argv: Sequence[str]) -> int:
