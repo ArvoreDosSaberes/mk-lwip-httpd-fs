@@ -31,7 +31,9 @@ NEWLINE = "\r\n"  # usado apenas dentro de cabeçalhos HTTP
 HEX_BYTES_PER_LINE = 16
 
 DEFAULT_SERVER_AGENT = "lwIP/1.3.1 (http://savannah.nongnu.org/projects/lwip)"
-DEFAULT_SERVER_HEADER = f"Server: {DEFAULT_SERVER_AGENT}\\r\\n"
+# Mantemos o valor do header sem CRLF embutido; a quebra de linha é adicionada
+# apenas em build_http_header, para evitar '\\r\\n' literais no fsdata.
+DEFAULT_SERVER_HEADER = f"Server: {DEFAULT_SERVER_AGENT}"
 
 CONTENT_TYPE_MAP = {
     "html": "text/html",
@@ -156,7 +158,9 @@ def parse_argv(argv: Sequence[str]) -> Tuple[MakeFsConfig, List[str]]:
                 name = arg[5:]
                 if not name:
                     name = DEFAULT_SERVER_AGENT
-                server_header = f"Server: {name}\\r\\n"
+                # Não embutimos CRLF aqui; a quebra de linha é feita em
+                # build_http_header, mantendo o fsdata com bytes corretos.
+                server_header = f"Server: {name}"
             elif arg == "-s":
                 process_subdirs = False
             elif arg == "-e":
@@ -338,8 +342,8 @@ def build_http_header(
 
     lines: List[str] = [status + NEWLINE]
 
-    # Server
-    lines.append(cfg.server_header)
+    # Server (sempre finalizado com CRLF)
+    lines.append(cfg.server_header + NEWLINE)
 
     # Content-Length (não para SSI)
     if not is_ssi:
@@ -447,23 +451,32 @@ def process_file(
     name_str = qualified_name
     name_bytes = (name_str + "\0").encode("ascii", errors="ignore")
 
+    # Determina o tipo MIME para documentação gerada no fsdata.c
+    ext = full_path.suffix.lstrip(".").lower()
+    content_type = CONTENT_TYPE_MAP.get(ext, DEFAULT_CONTENT_TYPE)
+    compression_str = "yes" if is_compressed else "no"
+
     data_file.write(f"static const unsigned char data_{varname}[] = {{\n")
-    data_file.write(f"/* {name_str} ({len(name_bytes)} chars) */\n")
+    data_file.write(
+        f"/* file: {name_str} | mime: {content_type} | size: {file_size} bytes | compressed: {compression_str} */\n"
+    )
 
     # Escreve nome do arquivo
     idx = 0
     idx = write_hex_bytes(data_file, name_bytes, idx)
 
-    # Alinhamento de payload (4 bytes como no C por padrão)
+    # Alinhamento após o nome (4 bytes como no C por padrão)
     while idx % 4 != 0:
         data_file.write("0x00,")
         idx += 1
         if idx % HEX_BYTES_PER_LINE == 0:
             data_file.write("\n")
 
-    prefix_len = idx
+    # Tamanho do prefixo apenas do nome (incluindo padding)
+    name_prefix_len = idx
 
-    # Cabeçalho HTTP opcional
+    # Cabeçalho HTTP opcional: vem logo após o nome
+    prefix_len = name_prefix_len
     if cfg.include_http_header:
         header_str = build_http_header(full_path, file_size, cfg, is_ssi, is_compressed)
         header_bytes = header_str.encode("ascii", errors="ignore")
@@ -494,9 +507,24 @@ def process_file(
 
     struct_file.write(f"{storage} struct fsdata_file file_{varname}[] = {{ {{\n")
     struct_file.write(f"file_{last_var_name},\n")
+    # Para o campo de dados da struct:
+    #  - o ponteiro de nome sempre aponta para o início do array (data_{varname})
+    #  - se o cabeçalho HTTP estiver incluído, o ponteiro de dados deve apontar
+    #    para o início do cabeçalho (após o nome), e o tamanho deve incluir
+    #    cabeçalho + corpo;
+    #  - se não houver cabeçalho, o ponteiro de dados aponta direto para o
+    #    início do conteúdo bruto (após o nome) e o tamanho é apenas o corpo.
+
+    if cfg.include_http_header:
+        data_offset = name_prefix_len
+        len_prefix = name_prefix_len
+    else:
+        data_offset = prefix_len
+        len_prefix = prefix_len
+
     struct_file.write(f"data_{varname},\n")
-    struct_file.write(f"data_{varname} + {prefix_len},\n")
-    struct_file.write(f"sizeof(data_{varname}) - {prefix_len},\n")
+    struct_file.write(f"data_{varname} + {data_offset},\n")
+    struct_file.write(f"sizeof(data_{varname}) - {len_prefix},\n")
 
     # Flags HTTP
     flags: List[str] = []
